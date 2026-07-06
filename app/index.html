@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>콩 결주 알림</title>
+<style>
+  :root{ --bg:#0f1720; --card:#1b2735; --ok:#1e9e5a; --skip:#e23c3c; --idle:#5b6b7d; --txt:#eef3f8; --mut:#9fb0c0; }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{margin:0; font-family:system-ui,'Malgun Gothic',sans-serif; background:var(--bg); color:var(--txt);}
+  header{display:flex; align-items:center; gap:10px; padding:12px 14px; background:#0b1118; position:sticky; top:0; z-index:5;}
+  header h1{font-size:18px; margin:0; flex:1;}
+  #dot{width:12px;height:12px;border-radius:50%;background:var(--idle);}
+  #dot.on{background:var(--ok);} #dot.err{background:var(--skip);}
+  button{font-size:16px; font-weight:700; border:0; border-radius:12px; padding:12px 16px; color:#fff; background:#2b6cff;}
+  button.sec{background:#2c3a4b;} button:active{filter:brightness(.85);}
+  .bar{display:flex; gap:8px; padding:10px 14px; flex-wrap:wrap;}
+  .grid{display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:0 14px;}
+  .ch{background:var(--card); border-radius:16px; padding:14px; border:3px solid transparent;}
+  .ch.skip{border-color:var(--skip); animation:flash .5s steps(2,end) infinite;}
+  @keyframes flash{50%{background:#3a1414;}}
+  .ch .name{font-size:14px; color:var(--mut);}
+  .ch .cnt{font-size:34px; font-weight:800; line-height:1.1;}
+  .ch .sub{font-size:13px; color:var(--mut); margin-top:4px;}
+  .ch .kk{color:var(--skip); font-weight:800;}
+  #alarm{position:fixed; inset:0; background:rgba(226,60,60,.97); display:none; flex-direction:column;
+    align-items:center; justify-content:center; z-index:20; text-align:center; padding:24px;}
+  #alarm.show{display:flex;}
+  #alarm .big{font-size:64px; font-weight:900;}
+  #alarm .msg{font-size:24px; margin:10px 0 30px;}
+  #alarm button{font-size:22px; padding:20px 40px; background:#111;}
+  .log{padding:12px 14px 40px;}
+  .log h2{font-size:14px; color:var(--mut); margin:8px 0;}
+  .log .row{display:flex; gap:10px; font-size:13px; padding:6px 0; border-bottom:1px solid #26323f;}
+  .log .row .t{color:var(--mut); min-width:64px;}
+  .log .row.k .m{color:var(--skip); font-weight:700;}
+  .hint{color:var(--mut); font-size:13px; padding:0 14px 10px;}
+  label.sw{display:flex; align-items:center; gap:8px; font-size:14px; color:var(--mut);}
+</style>
+</head>
+<body>
+<header>
+  <div id="dot"></div>
+  <h1>콩 결주 알림</h1>
+  <span id="stat" style="font-size:13px;color:var(--mut)">미연결</span>
+</header>
+
+<div class="bar">
+  <button id="btnConnect">🔗 연결</button>
+  <button id="btnReset" class="sec">계수 초기화</button>
+  <button id="btnTest" class="sec">알람 테스트</button>
+  <button id="btnCsv" class="sec">기록 저장(CSV)</button>
+</div>
+<div class="bar" style="padding-top:0">
+  <label class="sw"><input type="checkbox" id="soundOn" checked> 소리</label>
+  <label class="sw"><input type="checkbox" id="vibOn" checked> 진동</label>
+  <label class="sw"><input type="checkbox" id="wakeOn" checked> 화면 켜둠</label>
+</div>
+<p class="hint">크롬(안드로이드)에서 여세요. 연결 후 트랙터에 폰을 거치하면 됩니다. 결주 시 전체 화면·소리·진동으로 알립니다.</p>
+
+<div class="grid" id="grid"></div>
+
+<div class="log">
+  <h2>기록</h2>
+  <div id="rows"></div>
+</div>
+
+<div id="alarm">
+  <div class="big" id="alBig">결주!</div>
+  <div class="msg" id="alMsg"></div>
+  <button id="alAck">확인 (알람 끄기)</button>
+</div>
+
+<script>
+const NUS='6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const TX ='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const RX ='6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const NCH=4;
+
+let device, rxChar, wakeLock=null, audioCtx=null, alarmOsc=null;
+const log=[]; // {ts, ch, miss, tot}
+const state=Array.from({length:NCH},()=>({seed:0,skip:0,miss:0}));
+
+// ---------- UI 빌드 ----------
+const grid=document.getElementById('grid');
+const cards=[];
+for(let i=0;i<NCH;i++){
+  const d=document.createElement('div'); d.className='ch';
+  d.innerHTML=`<div class="name">${i+1}번 골</div>
+    <div class="cnt" id="c${i}">0</div>
+    <div class="sub">결주 <span class="kk" id="k${i}">0</span> · 누락 <span id="m${i}">0</span></div>`;
+  grid.appendChild(d); cards.push(d);
+}
+const $=id=>document.getElementById(id);
+function setDot(cls,txt){ const d=$('dot'); d.className=cls; $('stat').textContent=txt; }
+
+// ---------- 소리 ----------
+function ensureAudio(){ if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)(); if(audioCtx.state==='suspended') audioCtx.resume(); }
+function startTone(){
+  if(!$('soundOn').checked) return;
+  ensureAudio(); stopTone();
+  const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+  o.type='square'; o.frequency.value=880; g.gain.value=0.9;
+  o.connect(g); g.connect(audioCtx.destination); o.start();
+  // 삐-삐- 끊어울림
+  let hi=true; o._iv=setInterval(()=>{o.frequency.value=(hi=!hi)?880:1320;},250);
+  alarmOsc={o,g};
+}
+function stopTone(){ if(alarmOsc){ clearInterval(alarmOsc.o._iv); try{alarmOsc.o.stop();}catch(e){} alarmOsc=null; } }
+
+// ---------- 알람 ----------
+let vibIv=null;
+function fireAlarm(ch,miss){
+  $('alBig').textContent=`${ch}번 골 결주!`;
+  $('alMsg').textContent=`씨앗 ${miss}개 빠진 것으로 감지`;
+  $('alarm').classList.add('show');
+  startTone();
+  if($('vibOn').checked && navigator.vibrate){ navigator.vibrate([400,200,400,200,400]); vibIv=setInterval(()=>navigator.vibrate([400,200,400]),1500); }
+}
+function ackAlarm(){ $('alarm').classList.remove('show'); stopTone(); if(vibIv){clearInterval(vibIv);vibIv=null;} navigator.vibrate&&navigator.vibrate(0);
+  cards.forEach(c=>c.classList.remove('skip')); }
+$('alAck').onclick=ackAlarm;
+$('btnTest').onclick=()=>{ensureAudio(); fireAlarm(0,1);};
+
+// ---------- 기록 ----------
+function addLog(ch,miss,tot){
+  const ts=new Date();
+  log.push({ts:ts.toISOString(),ch,miss,tot});
+  const r=document.createElement('div'); r.className='row k';
+  const hh=String(ts.getHours()).padStart(2,'0'), mm=String(ts.getMinutes()).padStart(2,'0'), ss=String(ts.getSeconds()).padStart(2,'0');
+  r.innerHTML=`<span class="t">${hh}:${mm}:${ss}</span><span class="m">${ch}번 골 결주 (누락 ${miss})</span>`;
+  const rows=$('rows'); rows.insertBefore(r,rows.firstChild);
+}
+$('btnCsv').onclick=()=>{
+  let csv='시각,채널,누락개수,채널누적누락\n'+log.map(e=>`${e.ts},${e.ch},${e.miss},${e.tot}`).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='결주기록_'+new Date().toISOString().slice(0,10)+'.csv'; a.click();
+};
+
+// ---------- 메시지 처리 ----------
+function onMsg(m){
+  if(m.t==='stat'){
+    for(let i=0;i<NCH;i++){
+      state[i].seed=m.s[i]; state[i].skip=m.k[i]; state[i].miss=m.m[i];
+      $('c'+i).textContent=m.s[i]; $('k'+i).textContent=m.k[i]; $('m'+i).textContent=m.m[i];
+    }
+  } else if(m.t==='skip'){
+    const ch=m.ch;
+    cards[ch-1].classList.add('skip');
+    addLog(ch,m.miss,m.tot);
+    fireAlarm(ch,m.miss);
+  }
+}
+
+// ---------- BLE ----------
+let buf='';
+function handleTx(ev){
+  buf+=new TextDecoder().decode(ev.target.value);
+  let nl;
+  while((nl=buf.indexOf('\n'))>=0){
+    const line=buf.slice(0,nl).trim(); buf=buf.slice(nl+1);
+    if(line){ try{ onMsg(JSON.parse(line)); }catch(e){} }
+  }
+}
+async function connect(){
+  if(!navigator.bluetooth){ alert('이 브라우저는 Web Bluetooth를 지원하지 않습니다. 안드로이드 크롬을 사용하세요.'); return; }
+  try{
+    ensureAudio(); // 사용자 제스처 시점에 오디오 활성화
+    setDot('','연결 중…');
+    device=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'KongGyeolju'}],optionalServices:[NUS]});
+    device.addEventListener('gattserverdisconnected',onDisc);
+    const srv=await device.gatt.connect();
+    const svc=await srv.getPrimaryService(NUS);
+    const tx=await svc.getCharacteristic(TX);
+    rxChar=await svc.getCharacteristic(RX);
+    await tx.startNotifications();
+    tx.addEventListener('characteristicvaluechanged',handleTx);
+    setDot('on','연결됨: '+device.name);
+    if($('wakeOn').checked) reqWake();
+  }catch(e){ setDot('err','연결 실패'); console.warn(e); }
+}
+function onDisc(){ setDot('err','연결 끊김 — 재연결 필요'); }
+$('btnConnect').onclick=connect;
+$('btnReset').onclick=async()=>{ if(rxChar) await rxChar.writeValue(new TextEncoder().encode('reset')); log.length=0; $('rows').innerHTML=''; };
+
+// ---------- 화면 켜둠 ----------
+async function reqWake(){ try{ wakeLock=await navigator.wakeLock.request('screen'); }catch(e){} }
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'&&$('wakeOn').checked) reqWake(); });
+$('wakeOn').onchange=e=>{ if(e.target.checked) reqWake(); else if(wakeLock){wakeLock.release();wakeLock=null;} };
+</script>
+</body>
+</html>

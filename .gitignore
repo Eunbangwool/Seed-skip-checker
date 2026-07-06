@@ -1,0 +1,16 @@
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# 데이터/문서 (레포에 안 올림)
+*.xlsx
+viewer_data.json
