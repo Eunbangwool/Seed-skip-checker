@@ -45,12 +45,25 @@ const int PIN[NCH]   = {25, 26, 32, 33}; // 채널1~4 GPIO (docs/02 참고)
 #define NUS_TX   "6E400003-B5A3-F393-E0A9-E50E24DCCA9E" // ESP32→폰 (notify)
 // =====================================================================
 
+// ---- 채널별 판단 상태 (Arduino 자동 프로토타입보다 먼저 정의되어야 함) ----
+struct Chan {
+  uint16_t proc = 0;          // 처리한 엣지 수
+  uint32_t lastSeedUs = 0;
+  uint32_t hist[HIST_N];      // 최근 정상 간격(µs)
+  int      histLen = 0;
+  int      histPos = 0;
+  uint32_t seedCount = 0;     // 감지한 씨앗 수
+  uint32_t skipEvents = 0;    // 결주 이벤트 수
+  uint32_t missedTotal = 0;   // 누락 추정 씨앗 총합
+  uint32_t lastSeedForRate = 0;
+} ch[NCH];
+
 // ---- ISR 공유 상태 ----
 volatile uint32_t g_lastEdgeUs[NCH] = {0};
 volatile uint32_t g_edgeTimeUs[NCH] = {0};
 volatile uint16_t g_edgeCount[NCH]  = {0};
 
-inline void IRAM_ATTR onEdge(int ch) {
+void IRAM_ATTR onEdge(int ch) {   // inline 금지: IRAM 리터럴 재배치 오류(dangerous relocation) 방지
   uint32_t now = micros();
   if (now - g_lastEdgeUs[ch] < DEBOUNCE_US) return; // 디바운스
   g_lastEdgeUs[ch] = now;
@@ -63,18 +76,7 @@ void IRAM_ATTR isr2() { onEdge(2); }
 void IRAM_ATTR isr3() { onEdge(3); }
 void (*ISRS[NCH])() = {isr0, isr1, isr2, isr3};
 
-// ---- 채널별 판단 상태 ----
-struct Chan {
-  uint16_t proc = 0;          // 처리한 엣지 수
-  uint32_t lastSeedUs = 0;
-  uint32_t hist[HIST_N];      // 최근 정상 간격(µs)
-  int      histLen = 0;
-  int      histPos = 0;
-  uint32_t seedCount = 0;     // 감지한 씨앗 수
-  uint32_t skipEvents = 0;    // 결주 이벤트 수
-  uint32_t missedTotal = 0;   // 누락 추정 씨앗 총합
-  uint32_t lastSeedForRate = 0;
-} ch[NCH];
+// ---- 채널별 판단 상태 (Chan 구조체는 파일 상단 CONFIG 아래로 이동) ----
 
 // ---- BLE ----
 BLECharacteristic* txChar = nullptr;

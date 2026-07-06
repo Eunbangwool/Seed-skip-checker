@@ -14,3 +14,8 @@ __pycache__/
 # 데이터/문서 (레포에 안 올림)
 *.xlsx
 viewer_data.json
+
+# arduino-cli 바이너리 (flash.ps1 스크립트만 커밋)
+tools/arduino-cli.exe
+tools/*.zip
+tools/LICENSE.txt
